@@ -552,11 +552,8 @@ async function main() {
 
               if (tgEnabled() && result.executed) {
                 sendExecConfirmation?.({
-                  // label: trade.label,
                   side: trade.side,
-                  // outcome: trade.outcome,
                   market: trade.market,
-                  // price: trade.price,
                   copySize,
                   status: result.status,
                 });
