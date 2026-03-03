@@ -61,6 +61,7 @@ async function initClobClient() {
     try {
       const creds = await clobClient.createOrDeriveApiKey();
       if (creds && creds.key) {
+        // @ts-ignore
         clobClient = new ClobClient(CLOB_URL, chainId, wallet, creds);
         log("info", `API key derived: ${creds.key.slice(0, 8)}...`);
       }
