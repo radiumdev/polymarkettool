@@ -1,0 +1,39 @@
+{
+  "name": "polycopy",
+  "version": "5.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "npx prisma generate && next build",
+    "start": "next start",
+    "bot": "npx tsx bot/index.ts",
+    "db:push": "npx prisma db push",
+    "db:studio": "npx prisma studio",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "next": "14.2.21",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "lucide-react": "^0.460.0",
+    "zustand": "^5.0.2",
+    "clsx": "^2.1.1",
+    "ethers": "^6.13.4",
+    "next-auth": "^4.24.11",
+    "bcryptjs": "^2.4.3",
+    "stripe": "^17.5.0",
+    "@prisma/client": "^6.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^19.0.1",
+    "@types/react-dom": "^19.0.1",
+    "@types/bcryptjs": "^2.4.6",
+    "typescript": "^5.7.2",
+    "tailwindcss": "^3.4.16",
+    "postcss": "^8.4.49",
+    "autoprefixer": "^10.4.20",
+    "tsx": "^4.19.2",
+    "prisma": "^6.4.1"
+  }
+}

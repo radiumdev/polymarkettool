@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  polycopy:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - polycopy-data:/app/data
+    env_file:
+      - .env.local
+    environment:
+      - NODE_ENV=production
+      - NEXTAUTH_URL=https://your-domain.com
+    restart: unless-stopped
+
+volumes:
+  polycopy-data:

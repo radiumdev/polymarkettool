@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+body { background: #06070b; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-thumb { background: #1f2033; border-radius: 3px; }
+input[type="range"] { -webkit-appearance: none; height: 4px; background: #1f2033; border-radius: 2px; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; background: #00d4aa; border-radius: 50%; cursor: pointer; }
+.fade-in { animation: fi .2s ease; }
+@keyframes fi { from { opacity:0; transform:translateY(4px) } to { opacity:1; transform:translateY(0) } }

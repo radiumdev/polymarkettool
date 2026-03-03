@@ -1,0 +1,144 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String
+  passwordHash    String
+  plan            String    @default("free")
+  stripeCustomerId String?
+  stripeSubId     String?
+  maxWallets      Int       @default(2)
+  createdAt       DateTime  @default(now())
+  lastLoginAt     DateTime  @default(now())
+
+  traders         Trader[]
+  copyTrades      CopyTrade[]
+  logs            Log[]
+  shadows         ShadowPosition[]
+  configs         Config[]
+  botStatus       BotStatus?
+}
+
+model Trader {
+  address         String
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  label           String    @default("")
+  totalTrades     Int       @default(0)
+  winCount        Int       @default(0)
+  lossCount       Int       @default(0)
+  winRate         Float     @default(0)
+  totalPnl        Float     @default(0)
+  avgTradeSize    Float     @default(0)
+  roi             Float     @default(0)
+  lastActive      Float     @default(0)
+  marketsTraded   Int       @default(0)
+  longestWinStreak Int      @default(0)
+  maxDrawdown     Float     @default(0)
+  sharpeRatio     Float     @default(0)
+  score           Float     @default(0)
+  tracked         Boolean   @default(false)
+  status          String    @default("active")
+  copyAllocation  Int       @default(100)
+  addedAt         DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  @@id([address, userId])
+  @@index([userId, tracked])
+  @@index([userId, score])
+}
+
+model CopyTrade {
+  id              String    @id
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  timestamp       Float
+  sourceTradeId   String?
+  sourceWallet    String
+  sourceLabel     String    @default("")
+  market          String    @default("")
+  conditionId     String    @default("")
+  tokenId         String    @default("")
+  outcome         String    @default("")
+  originalPrice   Float     @default(0)
+  executedPrice   Float     @default(0)
+  slippage        Float     @default(0)
+  originalSize    Float     @default(0)
+  copySize        Float     @default(0)
+  cost            Float     @default(0)
+  status          String    @default("pending")
+  skipReason      String    @default("")
+  pnl             Float     @default(0)
+  resolved        Boolean   @default(false)
+  approvedAt      Float?
+  createdAt       DateTime  @default(now())
+
+  @@index([userId, status])
+  @@index([userId, timestamp])
+}
+
+model ShadowPosition {
+  id              String    @id
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  traderAddress   String
+  traderLabel     String    @default("")
+  market          String    @default("")
+  conditionId     String    @default("")
+  tokenId         String    @default("")
+  side            String    @default("BUY")
+  outcome         String    @default("")
+  entryPrice      Float     @default(0)
+  currentPrice    Float     @default(0)
+  entrySize       Float     @default(0)
+  shares          Float     @default(0)
+  shadowPnl       Float     @default(0)
+  timestamp       Float     @default(0)
+  detectedAt      Float     @default(0)
+  resolved        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+
+  @@index([userId, resolved])
+  @@index([userId, traderAddress])
+}
+
+model Log {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  level     String
+  message   String
+  data      String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Config {
+  key       String
+  value     String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@id([key, userId])
+}
+
+model BotStatus {
+  userId          String    @id
+  user            User      @relation(fields: [userId], references: [id])
+  running         Boolean   @default(false)
+  startedAt       DateTime?
+  lastPoll        DateTime?
+  pollCount       Int       @default(0)
+  tradesDetected  Int       @default(0)
+  tradesCopied    Int       @default(0)
+  errors          Int       @default(0)
+}
