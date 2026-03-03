@@ -18,8 +18,6 @@ model User {
   maxWallets      Int       @default(2)
   telegramChatId  String?
   telegramLinked  Boolean   @default(false)
-  telegramLinkCode String?
-  telegramLinkExp  DateTime?
   createdAt       DateTime  @default(now())
   lastLoginAt     DateTime  @default(now())
 

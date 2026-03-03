@@ -1,11 +1,9 @@
 /**
- * PolyCopy Telegram Bot — Multi-User
- * /start → Welcome + link instructions
- * /link <email> → Sends 6-digit code
- * /verify <code> → Links Telegram to PolyCopy account
+ * PolyCopy Telegram Bot — Multi-User with Password Auth
+ * /start → Welcome
+ * /login <email> <password> → Links Telegram to account
  * /status → Shows tracked wallets + shadow P&L
  * /unlink → Disconnects Telegram
- * Trade alerts sent per-user to their linked chat
  */
 
 import * as db from "./db";
@@ -13,9 +11,6 @@ import * as db from "./db";
 const TG_API = "https://api.telegram.org/bot";
 let BOT_TOKEN = "";
 let lastUpdateId = 0;
-
-// Temp state: chatId → { email, userId }
-const linkState = new Map<string, { email: string; userId: string }>();
 
 export function initTelegram(token: string) {
   BOT_TOKEN = token;
@@ -29,7 +24,6 @@ export function initTelegram(token: string) {
 
 export function isEnabled() { return !!BOT_TOKEN; }
 
-// ── Raw Telegram API call ──────────────────────────────────
 async function tg(method: string, body?: any): Promise<any> {
   try {
     const res = await fetch(`${TG_API}${BOT_TOKEN}/${method}`, {
@@ -49,17 +43,12 @@ async function tg(method: string, body?: any): Promise<any> {
   }
 }
 
-// ── Send message to specific chat ──────────────────────────
 async function sendTo(chatId: string, text: string, markup?: any): Promise<number | null> {
   const result = await tg("sendMessage", {
     chat_id: chatId, text, parse_mode: "HTML",
     ...(markup ? { reply_markup: markup } : {}),
   });
   return result?.result?.message_id || null;
-}
-
-function genCode(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 function esc(s: string): string {
@@ -71,13 +60,12 @@ async function handleStart(chatId: string) {
   const existing = await db.getUserByTelegramChat(chatId);
   if (existing) {
     await sendTo(chatId, [
-      `✅ <b>Already linked</b> to <b>${esc(existing.email)}</b>`,
+      `✅ <b>Logged in</b> as <b>${esc(existing.email)}</b>`,
       ``,
       `You'll receive trade alerts here automatically.`,
       ``,
-      `Commands:`,
-      `/status — Your tracked wallets & P&L`,
-      `/unlink — Disconnect this account`,
+      `/status — Your wallets & P&L`,
+      `/unlink — Disconnect`,
     ].join("\n"));
     return;
   }
@@ -87,81 +75,51 @@ async function handleStart(chatId: string) {
     ``,
     `Copy-trade Polymarket whales with real-time alerts.`,
     ``,
-    `<b>Link your account:</b>`,
-    `1️⃣ Send: /link your@email.com`,
-    `2️⃣ You'll get a 6-digit code`,
-    `3️⃣ Send: /verify CODE`,
+    `<b>Login with your PolyCopy account:</b>`,
+    `/login your@email.com yourpassword`,
+    ``,
+    `<i>Your password is used once to verify and never stored in chat.</i>`,
     ``,
     `Don't have an account? Sign up at your PolyCopy dashboard first.`,
   ].join("\n"));
 }
 
-// ── /link <email> ──────────────────────────────────────────
-async function handleLink(chatId: string, email: string) {
-  if (!email || !email.includes("@")) {
-    await sendTo(chatId, "❌ Usage: /link your@email.com");
+// ── /login <email> <password> ──────────────────────────────
+async function handleLogin(chatId: string, email: string, password: string, msgId: number) {
+  if (!email || !password) {
+    await sendTo(chatId, "❌ Usage: /login your@email.com yourpassword");
     return;
   }
+
+  // Delete the user's message containing the password immediately
+  await tg("deleteMessage", { chat_id: chatId, message_id: msgId }).catch(() => {});
 
   const existing = await db.getUserByTelegramChat(chatId);
   if (existing) {
-    await sendTo(chatId, `Already linked to <b>${esc(existing.email)}</b>. Send /unlink first to switch accounts.`);
+    await sendTo(chatId, `Already logged in as <b>${esc(existing.email)}</b>. Send /unlink first to switch accounts.`);
     return;
   }
 
-  const user = await db.getUserByEmail(email);
+  // Verify credentials
+  const user = await db.authenticateUser(email, password);
   if (!user) {
-    await sendTo(chatId, `❌ No account found for <b>${esc(email)}</b>. Sign up on the dashboard first.`);
+    await sendTo(chatId, "❌ Invalid email or password. Try again.");
     return;
   }
 
-  const code = genCode();
-  await db.setTelegramLinkCode(user.id, code);
-  linkState.set(chatId, { email: email.toLowerCase().trim(), userId: user.id });
+  // Link telegram
+  await db.linkTelegram(user.id, chatId);
 
   await sendTo(chatId, [
-    `📧 Linking to <b>${esc(email)}</b>`,
-    ``,
-    `Your verification code: <code>${code}</code>`,
-    ``,
-    `Send: /verify ${code}`,
-    ``,
-    `<i>Code expires in 10 minutes.</i>`,
-  ].join("\n"));
-}
-
-// ── /verify <code> ─────────────────────────────────────────
-async function handleVerify(chatId: string, code: string) {
-  if (!code || code.length !== 6) {
-    await sendTo(chatId, "❌ Usage: /verify 123456");
-    return;
-  }
-
-  const pending = linkState.get(chatId);
-  if (!pending) {
-    await sendTo(chatId, "❌ No pending link. Send /link your@email.com first.");
-    return;
-  }
-
-  const user = await db.verifyTelegramLink(pending.email, code, chatId);
-  if (!user) {
-    await sendTo(chatId, "❌ Invalid or expired code. Try /link again.");
-    return;
-  }
-
-  linkState.delete(chatId);
-
-  await sendTo(chatId, [
-    `✅ <b>Account linked!</b>`,
+    `✅ <b>Logged in!</b>`,
     ``,
     `Welcome, <b>${esc(user.name)}</b>! 🎉`,
     ``,
-    `You'll now receive alerts when:`,
-    `• 🔔 Your tracked wallets make trades`,
-    `• ⏳ Trades need approval (manual mode)`,
-    `• ✅ Trades are executed`,
+    `You'll now receive alerts for:`,
+    `• 🔔 New whale trades from your tracked wallets`,
+    `• ⏳ Trades needing approval (manual mode)`,
+    `• ✅ Executed trades`,
     ``,
-    `Commands:`,
     `/status — Your wallets & P&L`,
     `/unlink — Disconnect`,
   ].join("\n"));
@@ -171,7 +129,7 @@ async function handleVerify(chatId: string, code: string) {
 async function handleStatus(chatId: string) {
   const user = await db.getUserByTelegramChat(chatId);
   if (!user) {
-    await sendTo(chatId, "❌ Not linked. Send /link your@email.com");
+    await sendTo(chatId, "❌ Not logged in. Send /login email password");
     return;
   }
 
@@ -200,10 +158,10 @@ async function handleStatus(chatId: string) {
 async function handleUnlink(chatId: string) {
   const user = await db.unlinkTelegram(chatId);
   if (!user) {
-    await sendTo(chatId, "Not linked to any account.");
+    await sendTo(chatId, "Not logged in.");
     return;
   }
-  await sendTo(chatId, `✅ Unlinked from <b>${esc(user.email)}</b>. Send /link to connect a different account.`);
+  await sendTo(chatId, `✅ Logged out from <b>${esc(user.email)}</b>. Send /login to connect again.`);
 }
 
 // ── Poll for messages + callbacks ──────────────────────────
@@ -221,7 +179,6 @@ export async function pollUpdates(): Promise<void> {
   for (const update of result.result) {
     lastUpdateId = Math.max(lastUpdateId, update.update_id);
 
-    // Handle text messages (commands)
     const msg = update.message;
     if (msg?.text) {
       const chatId = String(msg.chat.id);
@@ -232,22 +189,17 @@ export async function pollUpdates(): Promise<void> {
         case "/start":
           await handleStart(chatId);
           break;
-        case "/link":
-          await handleLink(chatId, args[0] || "");
-          break;
-        case "/verify":
-          await handleVerify(chatId, args[0] || "");
+        case "/login":
+          await handleLogin(chatId, args[0] || "", args.slice(1).join(" ") || "", msg.message_id);
           break;
         case "/status":
           await handleStatus(chatId);
           break;
         case "/unlink":
+        case "/logout":
           await handleUnlink(chatId);
           break;
         default:
-          if (text.includes("@") && !text.startsWith("/")) {
-            await handleLink(chatId, text);
-          }
           break;
       }
     }
@@ -258,7 +210,7 @@ export async function pollUpdates(): Promise<void> {
       const chatId = String(cb.message?.chat?.id || "");
       const user = await db.getUserByTelegramChat(chatId);
       if (!user) {
-        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Not linked!", show_alert: true });
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Not logged in!", show_alert: true });
         continue;
       }
 

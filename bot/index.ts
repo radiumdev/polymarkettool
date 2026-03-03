@@ -442,8 +442,10 @@ async function main() {
   let users = await db.getAllActiveUsers();
 
   // Initialize Telegram (per-user, no chat ID needed)
-  if (process.env.TELEGRAM_BOT_TOKEN) {
-    initTelegram(process.env.TELEGRAM_BOT_TOKEN);
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  log("info", `Telegram token: ${tgToken ? tgToken.slice(0, 10) + "..." : "NOT SET"}`);
+  if (tgToken) {
+    initTelegram(tgToken);
     if (tgEnabled()) {
       log("info", "📱 Telegram bot enabled (per-user alerts)");
       setInterval(() => pollUpdates().catch(() => {}), 2000);

@@ -108,21 +108,20 @@ export async function getUserByEmail(email: string) {
   return prisma.user.findFirst({ where: { email: email.toLowerCase().trim() } });
 }
 
-export async function setTelegramLinkCode(userId: string, code: string) {
-  const exp = new Date(Date.now() + 10 * 60 * 1000); // 10 min expiry
-  return prisma.user.update({ where: { id: userId }, data: { telegramLinkCode: code, telegramLinkExp: exp } });
+export async function authenticateUser(email: string, password: string) {
+  const bcrypt = await import("bcryptjs");
+  const user = await prisma.user.findFirst({ where: { email: email.toLowerCase().trim() } });
+  if (!user) return null;
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) return null;
+  return user;
 }
 
-export async function verifyTelegramLink(email: string, code: string, chatId: string) {
-  const user = await prisma.user.findFirst({
-    where: { email: email.toLowerCase().trim(), telegramLinkCode: code, telegramLinkExp: { gte: new Date() } },
+export async function linkTelegram(userId: string, chatId: string) {
+  return prisma.user.update({
+    where: { id: userId },
+    data: { telegramChatId: chatId, telegramLinked: true },
   });
-  if (!user) return null;
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { telegramChatId: chatId, telegramLinked: true, telegramLinkCode: null, telegramLinkExp: null },
-  });
-  return user;
 }
 
 export async function unlinkTelegram(chatId: string) {
