@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getBotStatus, updateBotStatus, getConfig, setConfigValue, getLogs, addLog } from "@/lib/db";
+import { getBotStatus, updateBotStatus, getConfig, setConfigValue, getLogs, addLog, prisma } from "@/lib/db";
 import { getSessionUserId } from "@/lib/session";
 
 export async function GET(req: NextRequest) {
@@ -10,6 +10,10 @@ export async function GET(req: NextRequest) {
     if (a === "status") return NextResponse.json(await getBotStatus(uid));
     if (a === "config") return NextResponse.json(await getConfig(uid));
     if (a === "logs") return NextResponse.json({ logs: await getLogs(Number(new URL(req.url).searchParams.get("limit") || 100), uid) });
+    if (a === "telegram") {
+      const user = await prisma.user.findUnique({ where: { id: uid }, select: { telegramLinked: true, telegramChatId: true } });
+      return NextResponse.json({ linked: !!user?.telegramLinked, chatId: user?.telegramChatId || null });
+    }
     return NextResponse.json({ error: "Specify action" }, { status: 400 });
   } catch (e: any) { return NextResponse.json({ error: e.message }, { status: 500 }); }
 }

@@ -5,7 +5,7 @@
  */
 import fs from "fs";
 import path from "path";
-import { initTelegram, isEnabled as tgEnabled, sendTradeAlert, sendFilterNotice, sendExecConfirmation, sendStatus, pollCallbacks } from "./telegram";
+import { initTelegram, isEnabled as tgEnabled, pollUpdates, sendTradeAlertToUser, sendFilterNoticeToUser, sendExecToUser } from "./telegram";
 import * as db from "./db";
 
 // ── Load .env.local ──────────────────────────────────────
@@ -373,6 +373,7 @@ async function processUser(userId: string, email: string) {
             copySize: 0, status: "filtered", skipReason: filter.reason,
             timestamp: trade.timestamp || Date.now(),
           }, userId);
+          sendFilterNoticeToUser(userId, { traderLabel: trade.label, market: trade.market, side: trade.side, originalSize: trade.usdcSize, skipReason: filter.reason }).catch(() => {});
           continue;
         }
 
@@ -397,6 +398,10 @@ async function processUser(userId: string, email: string) {
             copySize, status: "pending_approval", timestamp: trade.timestamp || Date.now(),
           }, userId);
           log("info", `⏳ [MANUAL] Pending: ${trade.side} $${copySize.toFixed(2)} on "${trade.market}" — ${trade.label}${convMult > 1 ? ` [${convMult}x]` : ""}`, userId);
+          sendTradeAlertToUser(userId, {
+            traderLabel: trade.label, market: trade.market, outcome: trade.outcome, side: trade.side,
+            copySize, originalSize: trade.usdcSize, originalPrice: trade.price, conviction: convMult,
+          }).catch(() => {});
         } else {
           if (config.copyDelay > 0) await new Promise(r => setTimeout(r, config.copyDelay * 1000));
           const result = await executeCopy(trade, config);
@@ -408,6 +413,7 @@ async function processUser(userId: string, email: string) {
             originalSize: trade.usdcSize, copySize, status: result.status,
             skipReason: result.skipReason || "", timestamp: trade.timestamp || Date.now(),
           }, userId);
+          if (result.executed) sendExecToUser(userId, { side: trade.side, market: trade.market, copySize, status: result.status }).catch(() => {});
         }
       }
     }
@@ -434,6 +440,15 @@ async function main() {
 
   // Discover all users with tracked wallets
   let users = await db.getAllActiveUsers();
+
+  // Initialize Telegram (per-user, no chat ID needed)
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    initTelegram(process.env.TELEGRAM_BOT_TOKEN);
+    if (tgEnabled()) {
+      log("info", "📱 Telegram bot enabled (per-user alerts)");
+      setInterval(() => pollUpdates().catch(() => {}), 2000);
+    }
+  }
   if (users.length === 0) {
     log("warn", "No users with tracked wallets found. Waiting for signups...");
   } else {

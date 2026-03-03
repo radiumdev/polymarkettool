@@ -92,10 +92,52 @@ export async function getFirstUser() {
 }
 
 export async function getAllActiveUsers() {
-  // Get all users who have at least one tracked wallet
   const users = await prisma.user.findMany({
     where: { traders: { some: { tracked: true, status: "active" } } },
-    select: { id: true, email: true },
+    select: { id: true, email: true, telegramChatId: true, telegramLinked: true },
   });
   return users;
+}
+
+// ── Telegram Linking ──────────────────────────────────────
+export async function getUserByTelegramChat(chatId: string) {
+  return prisma.user.findFirst({ where: { telegramChatId: chatId, telegramLinked: true } });
+}
+
+export async function getUserByEmail(email: string) {
+  return prisma.user.findFirst({ where: { email: email.toLowerCase().trim() } });
+}
+
+export async function setTelegramLinkCode(userId: string, code: string) {
+  const exp = new Date(Date.now() + 10 * 60 * 1000); // 10 min expiry
+  return prisma.user.update({ where: { id: userId }, data: { telegramLinkCode: code, telegramLinkExp: exp } });
+}
+
+export async function verifyTelegramLink(email: string, code: string, chatId: string) {
+  const user = await prisma.user.findFirst({
+    where: { email: email.toLowerCase().trim(), telegramLinkCode: code, telegramLinkExp: { gte: new Date() } },
+  });
+  if (!user) return null;
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { telegramChatId: chatId, telegramLinked: true, telegramLinkCode: null, telegramLinkExp: null },
+  });
+  return user;
+}
+
+export async function unlinkTelegram(chatId: string) {
+  const user = await prisma.user.findFirst({ where: { telegramChatId: chatId } });
+  if (!user) return null;
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { telegramChatId: null, telegramLinked: false },
+  });
+  return user;
+}
+
+export async function getAllTelegramUsers() {
+  return prisma.user.findMany({
+    where: { telegramLinked: true, telegramChatId: { not: null } },
+    select: { id: true, email: true, telegramChatId: true },
+  });
 }
