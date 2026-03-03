@@ -33,10 +33,10 @@ const KEY = process.env.PRIVATE_KEY || "";
 let USER_ID = process.env.USER_ID || "";
 
 // ── Logger ───────────────────────────────────────────────
-function log(level: string, msg: string) {
+function log(level: string, msg: string, userId?: string) {
   const ts = new Date().toISOString();
   console.log(`[${ts}] [${level.toUpperCase()}] ${msg}`);
-  if (USER_ID) db.addLog(USER_ID, level, msg).catch(() => {});
+  if (userId) db.addLog(userId, level, msg).catch(() => {});
 }
 
 function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
@@ -50,6 +50,7 @@ async function initClobClient() {
     return false;
   }
   try {
+    // @ts-ignore - optional dependency
     const { ClobClient } = await import("@polymarket/clob-client");
     const { ethers } = await import("ethers");
     const chainId = 137; // Polygon
@@ -228,7 +229,7 @@ async function executeCopy(trade: any, config: any): Promise<{ executed: boolean
 // ── Shadow P&L: Backfill ─────────────────────────────────
 const SHADOW_INTERVAL = 60_000; // Update shadow prices every 60s
 
-async function backfillShadow(traders: any[]) {
+async function backfillShadow(traders: any[], userId: string) {
   let total = 0;
   for (const trader of traders) {
     try {
@@ -260,334 +261,245 @@ async function backfillShadow(traders: any[]) {
           shadowPnl: 0,
           timestamp: (trade.timestamp || 0) * 1000,
           detectedAt: Date.now(),
-        }, USER_ID);
+        }, userId);
         total++;
       }
     } catch (e: any) {
-      log("error", `Shadow backfill ${trader.label || trader.address.slice(0, 8)}: ${e.message?.slice(0, 80)}`);
+      log("error", `Shadow backfill ${trader.label || trader.address.slice(0, 8)}: ${e.message?.slice(0, 80)}`, userId);
     }
   }
-  log("info", `📊 Shadow backfill complete: ${total} positions from ${traders.length} traders`);
+  log("info", `📊 Shadow backfill complete: ${total} positions from ${traders.length} traders`, userId);
   return total;
 }
 
-// ── Shadow P&L: Update Prices ────────────────────────────
+// ── Shadow P&L: Update Prices (all users) ────────────────
 async function updateShadowPrices() {
-  if (!USER_ID) return;
   try {
-    const positions = await db.getOpenShadowPositions(USER_ID);
-    if (!positions.length) return;
+    const users = await db.getAllActiveUsers();
+    for (const user of users) {
+      const positions = await db.getOpenShadowPositions(user.id);
+      if (!positions.length) continue;
 
-    // Group by tokenId
-    const tokenIds = [...new Set(positions.map(p => p.tokenId).filter(Boolean))];
-    const priceMap = new Map<string, number>();
+      const tokenIds = [...new Set(positions.map(p => p.tokenId).filter(Boolean))];
+      const priceMap = new Map<string, number>();
 
-    // Fetch prices individually via midpoint endpoint
-    for (const tid of tokenIds) {
-      try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 5000);
-        const res = await fetch(`${CLOB_URL}/midpoint?token_id=${tid}`, {
-          headers: { Accept: "application/json" },
-          signal: ctrl.signal,
-        });
-        clearTimeout(t);
-        if (res.ok) {
-          const data = await res.json();
-          const mid = Number(data?.mid ?? data?.price ?? data);
-          if (mid > 0 && mid <= 1) priceMap.set(tid, mid);
-        }
-      } catch {}
-    }
-
-    // Update positions
-    let updated = 0;
-    let totalPnl = 0;
-    for (const pos of positions) {
-      const currentPrice = priceMap.get(pos.tokenId) ?? pos.currentPrice;
-      let pnl = 0;
-      if (pos.side === "BUY") {
-        pnl = (currentPrice - pos.entryPrice) * pos.shares;
-      } else {
-        pnl = (pos.entryPrice - currentPrice) * pos.shares;
+      for (const tid of tokenIds) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 5000);
+          const res = await fetch(`${CLOB_URL}/midpoint?token_id=${tid}`, {
+            headers: { Accept: "application/json" },
+            signal: ctrl.signal,
+          });
+          clearTimeout(t);
+          if (res.ok) {
+            const data = await res.json();
+            const mid = Number(data?.mid ?? data?.price ?? data);
+            if (mid > 0 && mid <= 1) priceMap.set(tid, mid);
+          }
+        } catch {}
       }
-      totalPnl += pnl;
-      await db.updateShadowPrice(pos.id, currentPrice, pnl);
-      updated++;
-    }
 
-    const traderCount = new Set(positions.map(p => p.traderAddress)).size;
-    log("info", `📈 Shadow: ${priceMap.size} prices | ${traderCount} traders | ${updated} pos | Total: $${totalPnl.toFixed(2)}`);
+      let totalPnl = 0;
+      for (const pos of positions) {
+        const currentPrice = priceMap.get(pos.tokenId) ?? pos.currentPrice;
+        let pnl = 0;
+        if (pos.side === "BUY") pnl = (currentPrice - pos.entryPrice) * pos.shares;
+        else pnl = (pos.entryPrice - currentPrice) * pos.shares;
+        totalPnl += pnl;
+        await db.updateShadowPrice(pos.id, currentPrice, pnl);
+      }
+
+      log("info", `📈 Shadow [${user.email}]: ${priceMap.size} prices | ${positions.length} pos | $${totalPnl.toFixed(2)}`, user.id);
+    }
   } catch (e: any) {
-    log("error", `Shadow update error: ${e.message?.slice(0, 100)}`);
+    console.error(`Shadow update error: ${e.message?.slice(0, 100)}`);
   }
 }
 
-// ── Main Loop ────────────────────────────────────────────
-async function main() {
-  console.log("╔══════════════════════════════════════╗");
-  console.log("║       PolyCopy Bot v4.0 (Prisma)     ║");
-  console.log("║       Real CLOB Execution            ║");
-  console.log("╚══════════════════════════════════════╝");
+// ── Process single user's trades ─────────────────────────
+async function processUser(userId: string, email: string) {
+  const config = await db.getConfig(userId);
+  const tracked = await db.getTrackedTraders(userId);
+  const nowSec = Math.floor(Date.now() / 1000);
 
-  // Auto-detect user if not set
-  if (!USER_ID) {
-    const user = await db.getFirstUser();
-    if (user) {
-      USER_ID = user.id;
-      log("info", `Auto-detected user: ${user.email} (${USER_ID})`);
-    } else {
-      console.error("No users found. Sign up on the dashboard first, then restart the bot.");
-      process.exit(1);
+  let detected = 0;
+  let copied = 0;
+
+  // 1. Process approved trades (manual mode)
+  const approved = await db.prisma.copyTrade.findMany({ where: { userId, status: "approved" } });
+  for (const trade of approved) {
+    log("info", `✅ Executing approved: ${trade.outcome} on "${trade.market}"`, userId);
+    const mockTrade = {
+      side: trade.outcome || "BUY", price: trade.originalPrice || trade.executedPrice,
+      usdcSize: trade.originalSize || trade.copySize, tokenId: trade.tokenId || "",
+      market: trade.market, outcome: trade.outcome, label: trade.sourceLabel || "unknown", allocation: 100,
+    };
+    const result = await executeCopy(mockTrade, config);
+    const newStatus = result.status === "dry_run" ? "dry_run" : result.executed ? "executed" : "failed";
+    await db.updateCopyTrade(trade.id, { status: newStatus, approvedAt: Date.now(), skipReason: result.skipReason || "" });
+    if (result.executed) copied++;
+  }
+
+  // 2. Detect new trades from tracked wallets
+  for (const trader of tracked) {
+    const key = `${userId}:${trader.address}`;
+    if (!lastSeen.has(key)) lastSeen.set(key, nowSec);
+
+    const newTrades = await pollWallet(trader.address, trader.label || trader.address.slice(0, 8), trader.copyAllocation || 100);
+
+    if (newTrades.length > 0) {
+      detected += newTrades.length;
+      log("info", `🔔 ${newTrades.length} new trade(s) from ${trader.label || trader.address.slice(0, 8)}`, userId);
+
+      for (const trade of newTrades) {
+        const filter = applySmartFilters(trade, config);
+        if (!filter.pass) {
+          log("info", `🚫 Filtered: ${filter.reason} — ${trade.label} ${trade.side} on "${trade.market}"`, userId);
+
+          const shadowId = `shadow-${trade.address.slice(2, 10)}-${trade.tradeId}`;
+          await db.upsertShadowPosition(shadowId, {
+            traderAddress: trade.address, traderLabel: trade.label, market: trade.market,
+            conditionId: trade.conditionId, tokenId: trade.tokenId, side: trade.side,
+            outcome: trade.outcome, entryPrice: trade.price, currentPrice: trade.price,
+            entrySize: trade.usdcSize, shares: trade.size, shadowPnl: 0,
+            timestamp: trade.timestamp, detectedAt: Date.now(),
+          }, userId);
+
+          await db.insertCopyTrade({
+            id: uid(), sourceWallet: trade.address, sourceLabel: trade.label,
+            market: trade.market, conditionId: trade.conditionId, tokenId: trade.tokenId,
+            outcome: trade.outcome, originalPrice: trade.price, originalSize: trade.usdcSize,
+            copySize: 0, status: "filtered", skipReason: filter.reason,
+            timestamp: trade.timestamp || Date.now(),
+          }, userId);
+          continue;
+        }
+
+        const convMult = checkConviction(trade, config);
+        const copyPct = (config.copyPercentage / 100) * convMult;
+        const copySize = trade.usdcSize * copyPct * (trade.allocation / 100);
+
+        const shadowId = `shadow-${trade.address.slice(2, 10)}-${trade.tradeId}`;
+        await db.upsertShadowPosition(shadowId, {
+          traderAddress: trade.address, traderLabel: trade.label, market: trade.market,
+          conditionId: trade.conditionId, tokenId: trade.tokenId, side: trade.side,
+          outcome: trade.outcome, entryPrice: trade.price, currentPrice: trade.price,
+          entrySize: trade.usdcSize, shares: trade.size, shadowPnl: 0,
+          timestamp: trade.timestamp, detectedAt: Date.now(),
+        }, userId);
+
+        if (config.executionMode === "manual") {
+          await db.insertCopyTrade({
+            id: uid(), sourceWallet: trade.address, sourceLabel: trade.label,
+            market: trade.market, conditionId: trade.conditionId, tokenId: trade.tokenId,
+            outcome: trade.outcome, originalPrice: trade.price, originalSize: trade.usdcSize,
+            copySize, status: "pending_approval", timestamp: trade.timestamp || Date.now(),
+          }, userId);
+          log("info", `⏳ [MANUAL] Pending: ${trade.side} $${copySize.toFixed(2)} on "${trade.market}" — ${trade.label}${convMult > 1 ? ` [${convMult}x]` : ""}`, userId);
+        } else {
+          if (config.copyDelay > 0) await new Promise(r => setTimeout(r, config.copyDelay * 1000));
+          const result = await executeCopy(trade, config);
+          if (result.executed) copied++;
+          await db.insertCopyTrade({
+            id: uid(), sourceWallet: trade.address, sourceLabel: trade.label,
+            market: trade.market, conditionId: trade.conditionId, tokenId: trade.tokenId,
+            outcome: trade.outcome, originalPrice: trade.price, executedPrice: trade.price,
+            originalSize: trade.usdcSize, copySize, status: result.status,
+            skipReason: result.skipReason || "", timestamp: trade.timestamp || Date.now(),
+          }, userId);
+        }
+      }
     }
   }
+
+  return { detected, copied, wallets: tracked.length };
+}
+
+// ── Main Loop (Multi-User) ──────────────────────────────
+async function main() {
+  console.log("╔══════════════════════════════════════╗");
+  console.log("║   PolyCopy Bot v5.0 (Multi-User)     ║");
+  console.log("║   Prisma + Real CLOB Execution       ║");
+  console.log("╚══════════════════════════════════════╝");
 
   const hasKey = KEY.length > 10;
   log("info", `Starting | CLOB: ${CLOB_URL} | Poll: ${POLL}ms | Key: ${hasKey ? "YES" : "DRY RUN"}`);
 
-  // Initialize CLOB client
   if (hasKey) {
     const ok = await initClobClient();
     if (ok) log("info", "✅ CLOB client ready — LIVE EXECUTION ENABLED");
     else log("warn", "CLOB client failed — falling back to DRY RUN");
   }
 
-  // Initialize bot status
-  await db.updateBotStatus(USER_ID, {
-    running: 1, started_at: Date.now(), last_poll: 0,
-    poll_count: 0, trades_detected: 0, trades_copied: 0, errors: 0,
-  });
-
-  // Get tracked wallets
-  let tracked = await db.getTrackedTraders(USER_ID);
-  const nowSec = Math.floor(Date.now() / 1000);
-  for (const t of tracked) lastSeen.set(t.address, nowSec);
-  log("info", `Tracking ${tracked.length} wallets: ${tracked.map(t => t.label || t.address.slice(0, 8)).join(", ") || "none"}`);
-
-  const initConfig = await db.getConfig(USER_ID);
-  log("info", `Execution mode: ${initConfig.executionMode.toUpperCase()} | ${clobClient ? "CLOB LIVE" : "DRY RUN"}`);
-
-  if (tracked.length === 0) {
-    log("warn", "No tracked wallets. Go to Discover → Track some traders first.");
+  // Discover all users with tracked wallets
+  let users = await db.getAllActiveUsers();
+  if (users.length === 0) {
+    log("warn", "No users with tracked wallets found. Waiting for signups...");
+  } else {
+    log("info", `Found ${users.length} active user(s): ${users.map(u => u.email).join(", ")}`);
   }
 
-  // Initialize Telegram
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-    initTelegram(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID);
-    if (tgEnabled()) {
-      log("info", "📱 Telegram alerts enabled");
-      setInterval(() => pollCallbacks?.(), 2000);
+  // Init bot status + shadow backfill per user
+  for (const user of users) {
+    await db.updateBotStatus(user.id, {
+      running: 1, started_at: Date.now(), last_poll: 0,
+      poll_count: 0, trades_detected: 0, trades_copied: 0, errors: 0,
+    });
+    const shadowCount = await db.getShadowCount(user.id);
+    const tracked = await db.getTrackedTraders(user.id);
+    if (shadowCount === 0 && tracked.length > 0) {
+      log("info", `Shadow backfill for ${user.email}...`, user.id);
+      await backfillShadow(tracked, user.id);
     }
   }
 
-  // Shadow backfill on first run
-  const shadowCount = await db.getShadowCount(USER_ID);
-  if (shadowCount === 0 && tracked.length > 0) {
-    log("info", "Shadow P&L: No positions found, running initial backfill...");
-    await backfillShadow(tracked);
-  }
-
-  // Shadow price update interval
+  // Shadow price updates every 60s
   setInterval(updateShadowPrices, SHADOW_INTERVAL);
 
   let pollCount = 0;
-  let totalDetectedAll = 0;
-  let totalCopiedAll = 0;
-  let errorCount = 0;
+  const userStats = new Map<string, { detected: number; copied: number; errors: number }>();
 
-  // ── Poll Loop ──────────────────────────────────────────
+  // ── Poll Loop (all users) ─────────────────────────────
   setInterval(async () => {
     try {
-      const config = await db.getConfig(USER_ID);
-      tracked = await db.getTrackedTraders(USER_ID);
       pollCount++;
+      // Re-discover users each poll (picks up new signups)
+      users = await db.getAllActiveUsers();
 
-      await db.updateBotStatus(USER_ID, {
-        last_poll: Date.now(), poll_count: pollCount,
-      });
-
-      let totalDetected = 0;
-      let totalCopied = 0;
-
-      // 1. Process approved trades (manual mode)
-      const approved = (await db.prisma.copyTrade.findMany({
-        where: { userId: USER_ID, status: "approved" },
-      }));
-      for (const trade of approved) {
-        log("info", `✅ Executing approved trade: ${trade.outcome} on "${trade.market}"`);
-        const mockTrade = {
-          side: trade.outcome || "BUY",
-          price: trade.originalPrice || trade.executedPrice,
-          usdcSize: trade.originalSize || trade.copySize,
-          tokenId: trade.tokenId || "",
-          market: trade.market,
-          outcome: trade.outcome,
-          label: trade.sourceLabel || "unknown",
-          allocation: 100,
-        };
-        const result = await executeCopy(mockTrade, config);
-        const newStatus = result.status === "dry_run" ? "dry_run" : result.executed ? "executed" : "failed";
-        await db.updateCopyTrade(trade.id, {
-          status: newStatus,
-          approvedAt: Date.now(),
-          skipReason: result.skipReason || "",
-        });
-        if (result.executed) totalCopied++;
-      }
-
-      // 2. Detect new trades from tracked wallets
-      for (const trader of tracked) {
-        const newTrades = await pollWallet(
-          trader.address,
-          trader.label || trader.address.slice(0, 8),
-          trader.copyAllocation || 100
-        );
-
-        if (newTrades.length > 0) {
-          totalDetected += newTrades.length;
-          log("info", `🔔 ${newTrades.length} new trade(s) from ${trader.label || trader.address.slice(0, 8)}`);
-
-          for (const trade of newTrades) {
-            // Apply smart filters
-            const filter = applySmartFilters(trade, config);
-            if (!filter.pass) {
-              log("info", `🚫 Filtered: ${filter.reason} — ${trade.label} ${trade.side} on "${trade.market}"`);
-              if (tgEnabled()) sendFilterNotice?.({ traderLabel: trade.label, market: trade.market, side: trade.side, originalSize: trade.usdcSize, skipReason: filter.reason });
-
-              // Still record as shadow position
-              const shadowId = `shadow-${trade.address.slice(2, 10)}-${trade.tradeId}`;
-              await db.upsertShadowPosition(shadowId, {
-                traderAddress: trade.address,
-                traderLabel: trade.label,
-                market: trade.market,
-                conditionId: trade.conditionId,
-                tokenId: trade.tokenId,
-                side: trade.side,
-                outcome: trade.outcome,
-                entryPrice: trade.price,
-                currentPrice: trade.price,
-                entrySize: trade.usdcSize,
-                shares: trade.size,
-                shadowPnl: 0,
-                timestamp: trade.timestamp,
-                detectedAt: Date.now(),
-              }, USER_ID);
-
-              await db.insertCopyTrade({
-                id: uid(), sourceWallet: trade.address, sourceLabel: trade.label,
-                market: trade.market, conditionId: trade.conditionId,
-                tokenId: trade.tokenId, outcome: trade.outcome,
-                originalPrice: trade.price, originalSize: trade.usdcSize,
-                copySize: 0, status: "filtered", skipReason: filter.reason,
-                timestamp: trade.timestamp || Date.now(),
-              }, USER_ID);
-              continue;
-            }
-
-            // Conviction check
-            const convMult = checkConviction(trade, config);
-            const copyPct = (config.copyPercentage / 100) * convMult;
-            const copySize = trade.usdcSize * copyPct * (trade.allocation / 100);
-
-            // Record shadow position
-            const shadowId = `shadow-${trade.address.slice(2, 10)}-${trade.tradeId}`;
-            await db.upsertShadowPosition(shadowId, {
-              traderAddress: trade.address,
-              traderLabel: trade.label,
-              market: trade.market,
-              conditionId: trade.conditionId,
-              tokenId: trade.tokenId,
-              side: trade.side,
-              outcome: trade.outcome,
-              entryPrice: trade.price,
-              currentPrice: trade.price,
-              entrySize: trade.usdcSize,
-              shares: trade.size,
-              shadowPnl: 0,
-              timestamp: trade.timestamp,
-              detectedAt: Date.now(),
-            }, USER_ID);
-
-            if (config.executionMode === "manual") {
-              // Manual mode → save as pending
-              await db.insertCopyTrade({
-                id: uid(), sourceWallet: trade.address, sourceLabel: trade.label,
-                market: trade.market, conditionId: trade.conditionId,
-                tokenId: trade.tokenId, outcome: trade.outcome,
-                originalPrice: trade.price, originalSize: trade.usdcSize,
-                copySize, status: "pending_approval",
-                timestamp: trade.timestamp || Date.now(),
-              }, USER_ID);
-              log("info", `⏳ [MANUAL] Pending: ${trade.side} $${copySize.toFixed(2)} on "${trade.market}" (${trade.outcome}) — from ${trade.label}${convMult > 1 ? ` [${convMult}x conviction]` : ""}`);
-
-              if (tgEnabled()) {
-                sendTradeAlert?.({
-                  id: uid(),
-                  traderLabel: trade.label,
-                  side: trade.side,
-                  outcome: trade.outcome,
-                  market: trade.market,
-                  originalPrice: trade.price,
-                  originalSize: trade.usdcSize,
-                  copySize,
-                  conviction: convMult > 1 ? convMult : undefined,
-                });
-              }
-            } else {
-              // Auto mode → execute immediately
-              if (config.copyDelay > 0) await new Promise(r => setTimeout(r, config.copyDelay * 1000));
-
-              const result = await executeCopy(trade, config);
-              if (result.executed) totalCopied++;
-
-              await db.insertCopyTrade({
-                id: uid(), sourceWallet: trade.address, sourceLabel: trade.label,
-                market: trade.market, conditionId: trade.conditionId,
-                tokenId: trade.tokenId, outcome: trade.outcome,
-                originalPrice: trade.price, executedPrice: trade.price,
-                originalSize: trade.usdcSize, copySize,
-                status: result.status, skipReason: result.skipReason || "",
-                timestamp: trade.timestamp || Date.now(),
-              }, USER_ID);
-
-              if (tgEnabled() && result.executed) {
-                sendExecConfirmation?.({
-                  side: trade.side,
-                  market: trade.market,
-                  copySize,
-                  status: result.status,
-                });
-              }
-            }
+      for (const user of users) {
+        try {
+          if (!userStats.has(user.id)) userStats.set(user.id, { detected: 0, copied: 0, errors: 0 });
+          const stats = userStats.get(user.id)!;
+          const result = await processUser(user.id, user.email);
+          stats.detected += result.detected;
+          stats.copied += result.copied;
+          await db.updateBotStatus(user.id, {
+            last_poll: Date.now(), poll_count: pollCount,
+            trades_detected: stats.detected, trades_copied: stats.copied,
+          });
+          if (result.detected > 0) {
+            log("info", `[${user.email}] Poll #${pollCount}: ${result.detected} detected, ${result.copied} copied`, user.id);
           }
+        } catch (e: any) {
+          const stats = userStats.get(user.id);
+          if (stats) stats.errors++;
+          log("error", `[${user.email}] Error: ${e.message?.slice(0, 150)}`, user.id);
+          await db.updateBotStatus(user.id, { errors: stats?.errors || 0 }).catch(() => {});
         }
       }
-
-      totalDetectedAll += totalDetected;
-      totalCopiedAll += totalCopied;
-
-      await db.updateBotStatus(USER_ID, {
-        trades_detected: totalDetectedAll,
-        trades_copied: totalCopiedAll,
-      });
-
-      if (totalDetected > 0) {
-        log("info", `Poll #${pollCount}: ${totalDetected} detected, ${totalCopied} copied`);
-      }
     } catch (e: any) {
-      errorCount++;
-      log("error", `Poll error: ${e.message?.slice(0, 200)}`);
-      await db.updateBotStatus(USER_ID, { errors: errorCount }).catch(() => {});
+      console.error(`Poll error: ${e.message?.slice(0, 200)}`);
     }
   }, POLL);
 
-  // Periodic status log
-  setInterval(() => {
-    log("info", `Status: ${tracked.length} wallets | ${pollCount} polls | ${totalDetectedAll} detected | ${totalCopiedAll} copied | ${errorCount} errors`);
-  }, 300_000); // Every 5 minutes
+  // Status every 5 min
+  setInterval(async () => {
+    const u = await db.getAllActiveUsers();
+    const d = [...userStats.values()].reduce((s, v) => s + v.detected, 0);
+    const c = [...userStats.values()].reduce((s, v) => s + v.copied, 0);
+    log("info", `Status: ${u.length} users | ${pollCount} polls | ${d} detected | ${c} copied`);
+  }, 300_000);
 }
 
-main().catch(e => {
-  console.error("Fatal:", e);
-  process.exit(1);
-});
+main().catch(e => { console.error("Fatal:", e); process.exit(1); });

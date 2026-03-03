@@ -90,3 +90,12 @@ export async function getShadowCount(userId: string) {
 export async function getFirstUser() {
   return prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
 }
+
+export async function getAllActiveUsers() {
+  // Get all users who have at least one tracked wallet
+  const users = await prisma.user.findMany({
+    where: { traders: { some: { tracked: true, status: "active" } } },
+    select: { id: true, email: true },
+  });
+  return users;
+}
