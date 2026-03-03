@@ -110,9 +110,16 @@ export async function getUserByEmail(email: string) {
 
 export async function authenticateUser(email: string, password: string) {
   const bcrypt = await import("bcryptjs");
-  const user = await prisma.user.findFirst({ where: { email: email.toLowerCase().trim() } });
-  if (!user) return null;
+  const normalizedEmail = email.toLowerCase().trim();
+  console.log(`[Auth] Looking up: ${normalizedEmail}`);
+  const user = await prisma.user.findFirst({ where: { email: normalizedEmail } });
+  if (!user) {
+    console.log(`[Auth] No user found for ${normalizedEmail}`);
+    return null;
+  }
+  console.log(`[Auth] Found user: ${user.id}, checking password...`);
   const valid = await bcrypt.compare(password, user.passwordHash);
+  console.log(`[Auth] Password valid: ${valid}`);
   if (!valid) return null;
   return user;
 }

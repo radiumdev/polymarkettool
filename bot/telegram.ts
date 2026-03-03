@@ -86,6 +86,7 @@ async function handleStart(chatId: string) {
 
 // ── /login <email> <password> ──────────────────────────────
 async function handleLogin(chatId: string, email: string, password: string, msgId: number) {
+  console.log(`[TG] handleLogin called: chatId=${chatId} email=${email} pwd=${password ? "***" : "EMPTY"}`);
   if (!email || !password) {
     await sendTo(chatId, "❌ Usage: /login your@email.com yourpassword");
     return;
@@ -94,23 +95,24 @@ async function handleLogin(chatId: string, email: string, password: string, msgI
   // Delete the user's message containing the password immediately
   await tg("deleteMessage", { chat_id: chatId, message_id: msgId }).catch(() => {});
 
-  const existing = await db.getUserByTelegramChat(chatId);
-  if (existing) {
-    await sendTo(chatId, `Already logged in as <b>${esc(existing.email)}</b>. Send /unlink first to switch accounts.`);
-    return;
-  }
+  try {
+    const existing = await db.getUserByTelegramChat(chatId);
+    if (existing) {
+      await sendTo(chatId, `Already logged in as <b>${esc(existing.email)}</b>. Send /unlink first to switch accounts.`);
+      return;
+    }
 
-  // Verify credentials
-  const user = await db.authenticateUser(email, password);
-  if (!user) {
-    await sendTo(chatId, "❌ Invalid email or password. Try again.");
-    return;
-  }
+    // Verify credentials
+    const user = await db.authenticateUser(email, password);
+    if (!user) {
+      await sendTo(chatId, "❌ Invalid email or password. Try again.");
+      return;
+    }
 
-  // Link telegram
-  await db.linkTelegram(user.id, chatId);
+    // Link telegram
+    await db.linkTelegram(user.id, chatId);
 
-  await sendTo(chatId, [
+    await sendTo(chatId, [
     `✅ <b>Logged in!</b>`,
     ``,
     `Welcome, <b>${esc(user.name)}</b>! 🎉`,
@@ -123,6 +125,10 @@ async function handleLogin(chatId: string, email: string, password: string, msgI
     `/status — Your wallets & P&L`,
     `/unlink — Disconnect`,
   ].join("\n"));
+  } catch (e: any) {
+    console.error("[Telegram] Login error:", e.message, e.stack);
+    await sendTo(chatId, `❌ Login error: ${(e.message || "unknown").slice(0, 100)}. Try again.`);
+  }
 }
 
 // ── /status ────────────────────────────────────────────────
@@ -187,9 +193,11 @@ export async function pollUpdates(): Promise<void> {
 
       switch (cmd.toLowerCase().replace(/@.*$/, "")) {
         case "/start":
+          console.log(`[TG] Received /start from ${chatId}`);
           await handleStart(chatId);
           break;
         case "/login":
+          console.log(`[TG] Received /login from ${chatId}, email=${args[0]}`);
           await handleLogin(chatId, args[0] || "", args.slice(1).join(" ") || "", msg.message_id);
           break;
         case "/status":

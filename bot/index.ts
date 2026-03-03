@@ -448,7 +448,7 @@ async function main() {
     initTelegram(tgToken);
     if (tgEnabled()) {
       log("info", "📱 Telegram bot enabled (per-user alerts)");
-      setInterval(() => pollUpdates().catch(() => {}), 2000);
+      setInterval(() => pollUpdates().catch(e => console.error("[Telegram] Poll error:", e.message?.slice(0, 150))), 2000);
     }
   }
   if (users.length === 0) {
