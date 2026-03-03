@@ -55,6 +55,7 @@ async function initClobClient() {
     const chainId = 137; // Polygon
     const wallet = new ethers.Wallet(KEY);
     log("info", `Wallet: ${wallet.address}`);
+    // @ts-ignore - ethers v6 wallet works at runtime
     clobClient = new ClobClient(CLOB_URL, chainId, wallet);
     log("info", "Deriving API key from wallet...");
     try {
