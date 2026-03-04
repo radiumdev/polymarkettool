@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
 export const prisma = new PrismaClient();
 
 export async function getTrackedTraders(userId: string) {
@@ -109,16 +110,16 @@ export async function getUserByEmail(email: string) {
 }
 
 export async function authenticateUser(email: string, password: string) {
-  const bcrypt = await import("bcryptjs");
-  const normalizedEmail = email.toLowerCase().trim();
-  console.log(`[Auth] Looking up: ${normalizedEmail}`);
-  const user = await prisma.user.findFirst({ where: { email: normalizedEmail } });
+  // const bcrypt = await import("bcryptjs");
+  // const normalizedEmail = email.toLowerCase().trim();
+  // console.log(`[Auth] Looking up: ${normalizedEmail}`);
+  const user = await prisma.user.findFirst({ where: { email: email.toLowerCase().trim() } });
   if (!user) {
-    console.log(`[Auth] No user found for ${normalizedEmail}`);
+    console.log(`[Auth] No user found for ${email.toLowerCase().trim()}`);
     return null;
   }
   console.log(`[Auth] Found user: ${user.id}, checking password...`);
-  const valid = await bcrypt.compare(password, user.passwordHash);
+  const valid = await bcrypt.compareSync(password, user.passwordHash);
   console.log(`[Auth] Password valid: ${valid}`);
   if (!valid) return null;
   return user;
